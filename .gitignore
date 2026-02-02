@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# venv
+venv/
+
+# torch / checkpoints
+*.pth
+*.pt
+
+# data / outputs
+save_data/
+wandb/
+
+# OS
+.DS_Store
+Thumbs.db
