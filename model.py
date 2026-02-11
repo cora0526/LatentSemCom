@@ -70,8 +70,6 @@ class VAE_Encoder_MNIST(nn.Module):
         return mu, logvar
     
 # DDPM for MNIST
-
-
 def timeembedding(t, dim):
     # t: (B,) int64
     half = dim // 2
@@ -100,4 +98,37 @@ class LatentDenoiser(nn.Module):
     def forward(self, zt, t):
         te = timeembedding(t, self.tdim)
         h = torch.cat([zt, te], dim=1)
+        return self.net(h)
+    
+# conditional DDPM for MNIST
+class LabelCondLatentDenoiser(nn.Module):
+    def __init__(self, num_classes: int, tdim: int = 128, z_dim: int = 64, ydim: int = 64):
+        super().__init__()
+        self.tdim = tdim
+        self.z_dim = z_dim
+        self.num_classes = num_classes
+
+        # label embedding: y -> (B, ydim)
+        self.y_emb = nn.Embedding(num_classes, ydim)
+
+        in_dim = z_dim + tdim + ydim
+
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, 256),
+            nn.SiLU(),
+            nn.Linear(256, 256),
+            nn.SiLU(),
+            nn.Linear(256, z_dim),  # predict eps (same shape as z)
+        )
+
+    def forward(self, zt: torch.Tensor, t: torch.Tensor, y: torch.Tensor):
+        """
+        zt: (B, z_dim) continuous latent at time t
+        t:  (B,) long
+        y:  (B,) long class label
+        return eps_pred: (B, z_dim)
+        """
+        te = timeembedding(t, self.tdim)     # (B, tdim)
+        ye = self.y_emb(y)                  # (B, ydim)
+        h = torch.cat([zt, te, ye], dim=1)  # (B, z_dim+tdim+ydim)
         return self.net(h)

@@ -22,7 +22,9 @@ def train_wgangp_mnist(
     ])
     ds_f = datasets.FashionMNIST(root="D:\Python\SemCom\saved_data", train=True, download=True, transform=tfm)
     ds_m = datasets.MNIST(root="D:\Python\SemCom\saved_data", train=True, download=True, transform=tfm)
-    ds = ConcatDataset([ds_f, ds_m])
+    ds_k = datasets.KMNIST(root="D:\Python\SemCom\saved_data", train=True, download=True, transform=tfm)
+    ds_e = datasets.EMNIST(root="D:\Python\SemCom\saved_data", split="letters", train=True, download=True, transform=tfm)
+    ds = ConcatDataset([ds_f, ds_m, ds_k, ds_e])
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
 
     G = Ganerator_MNIST(z_dim=z_dim).to(device)
@@ -77,26 +79,26 @@ def train_wgangp_mnist(
             with torch.no_grad():
                 samples = G(fixed_z)
                 # back to [0,1] for saving: (x+1)/2
-                save_image((samples + 1) / 2, f"./save_data/samples_ep{ep}.png", nrow=8)
+                save_image((samples + 1) / 2, f"./save_data/GAN_4d/samples_ep{ep}.png", nrow=8)
 
             
 
-    torch.save(G.state_dict(), "./save_model/G_wgangp_C.pth")
-    torch.save(D.state_dict(), "./save_model/D_wgangp_C.pth")
-    print("Saved: G_wgangp_C.pth, D_wgangp_C.pth")
+    torch.save(G.state_dict(), "./save_model/G_wgangp_4d.pth")
+    torch.save(D.state_dict(), "./save_model/D_wgangp_4d.pth")
+    print("Saved: G_wgangp_4d.pth, D_wgangp_4d.pth")
 
 if __name__ == "__main__":
     run = wandb.init(
     # Set the wandb entity where your project will be logged (generally your team name).
     entity="candy273321-national-central-university",
     # Set the wandb project where this run will be logged.
-    project="GAN MNIST+FashionMNIST",
+    project="GAN MNIST+FashionMNIST+EMNIST+KMNIST",
     # Track hyperparameters and run metadata.
     config={
         "learning_rate": 2e-4,
         "architecture": "GAN-Wasserstein-GP",
-        "dataset": "MNIST+FashionMNIST",
-        "epochs": 200,
+        "dataset": "MNIST+FashionMNIST+EMNIST+KMNIST",
+        "epochs": 500,
         "batch_size": 128,
         "z_dim": 64,
         "n_critic": 5,
