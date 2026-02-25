@@ -28,15 +28,19 @@ def train_latentDM(
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
     dl_f = DataLoader(ds_f, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
     f_iter = cycle(dl_f) 
+    m_iter = cycle(dl)
 
     # 固定測試集資料
     fixed_x, _ = next(iter(dl))
     fixed_x = fixed_x[:64].to(device)
-    save_image(fixed_x, f"./save_data/dm_recon_test.png", nrow=8)
+    save_image(fixed_x, f"./save_data/dm_recon_test_M.png", nrow=8)
+    fixed_x_F, _ = next(iter(dl_f))
+    fixed_x_F = fixed_x_F[:64].to(device)
+    save_image(fixed_x_F, f"./save_data/dm_recon_test_F.png", nrow=8)
 
     # 導入encoder和GAN模型 都是freeze的
     G = Ganerator_MNIST(z_dim=z_dim).to(device)
-    G.load_state_dict(torch.load("./save_model/G_wgangp.pth"))
+    G.load_state_dict(torch.load("./save_model/G_wgangp_C.pth"))
     G.eval()
     for p in G.parameters():
         p.requires_grad = False
@@ -66,52 +70,59 @@ def train_latentDM(
     DM =  LabelCondLatentDenoiser(num_classes=2, z_dim=z_dim, tdim=128, ydim=64).to(device)
     opt = torch.optim.Adam(DM.parameters(), lr=2e-4)
     
+    log_every = 50
     # 開始訓練
     for epoch in range(epochs):
-        num_batches = 0
         total_loss = 0.0
-        for (x_m, _), (x_f, _) in zip(dl, dl_f):
-            x_m = x_m.to(device)
-            x_f = x_f.to(device)
-            b = x_m.size(0)  # 假設兩個 loader batch_size 相同
+        num_batches = 0
 
+        for step in range(max(len(dl), len(dl_f))):
             # -------------------------
-            # 隨機選 target domain
+            # 隨機選 domain
             # -------------------------
-            use_fashion = (torch.rand((), device=device) < 0.5).item()
+            use_fashion = torch.rand(1).item() < 0.5
 
             if use_fashion:
-                x = x_f
+                x_f, _ = next(f_iter)
+                x = x_f.to(device)
                 Enc = E_f
-                y = torch.ones(b, device=device, dtype=torch.long)   # 1 = Fashion
+                y = torch.ones(x.size(0), device=device, dtype=torch.long)
+                
+                # interference 來自 MNIST
+                eps_f = eps_from_Ef(m_iter, E, device)
+
             else:
-                x = x_m
+                x_m, _ = next(m_iter)
+                x = x_m.to(device)
                 Enc = E
-                y = torch.zeros(b, device=device, dtype=torch.long)  # 0 = MNIST
+                y = torch.zeros(x.size(0), device=device, dtype=torch.long)
+                
+                # interference 來自 Fashion
+                eps_f = eps_from_Ef(f_iter, E_f, device)
+
+            b = x.size(0)
 
             # -------------------------
-            # encode to latent
+            # encode
             # -------------------------
             with torch.no_grad():
                 mu, _ = Enc(x)
-                z0 = mu  # (B, z_dim)
+                z0 = mu
 
             # -------------------------
             # sample timestep
             # -------------------------
-            t = torch.randint(0, T, (b,), device=device, dtype=torch.long)
+            t = torch.randint(0, T, (b,), device=device)
 
             # -------------------------
-            # noise (你的 interference 設計)
+            # noise (interference + Gaussian)
             # -------------------------
-            eps_f = eps_from_Ef(f_iter, E_f, device)  # (B, z_dim) 來源：Fashion encoder 的 latent
             lam = 0.5
             eps = (1 - lam) * torch.randn_like(z0) + lam * eps_f[:b]
-
             zt = sqrt_ab[t].view(b, 1) * z0 + sqrt_1mab[t].view(b, 1) * eps
 
             # -------------------------
-            # predict noise (加 label)
+            # predict noise
             # -------------------------
             eps_pred = DM(zt, t, y)
             loss = F.mse_loss(eps_pred, eps)
@@ -123,51 +134,89 @@ def train_latentDM(
             total_loss += loss.item()
             num_batches += 1
 
-        avg_loss = total_loss / num_batches
-        print(f"Epoch {epoch+1}/{epochs} | Avg Loss: {avg_loss:.4f}")
+            if (step + 1) % log_every == 0:
+                running_avg = total_loss / num_batches
+                print(f"Epoch {epoch+1}/{epochs} | step {step+1} | Avg Loss: {running_avg:.4f}")
 
+        avg_loss = total_loss / max(num_batches, 1)
+        print(f"[Epoch End] {epoch+1}/{epochs} | Avg Loss: {avg_loss:.4f}")
         if (epoch + 1) % save_every == 0:
             DM.eval()
             with torch.no_grad():
-                # 1) encode (fixed_x 是 MNIST，所以用 E)
-                mu, _ = E(fixed_x)
-                z0 = mu  # (64, z_dim)
+                # -------------------------
+                # 0) encode fixed test sets
+                # -------------------------
+                mu_m, _ = E(fixed_x)         # (B, z_dim)  MNIST latent
+                mu_f, _ = E_f(fixed_x_F)     # (B, z_dim)  Fashion latent
+                z0_m = mu_m
+                z0_f = mu_f
 
-                # 固定 label：MNIST = 0
-                y_fixed = torch.zeros(z0.size(0), device=device, dtype=torch.long)
+                B = z0_m.size(0)
 
-                # 2) 選一個噪聲步數
-                t_val = int(0.3 * T)   # 300
-                tt = torch.full((z0.size(0),), t_val, device=device, dtype=torch.long)
+                # -------------------------
+                # 1) build "received" mixed latent + noise
+                #    z_mix = a*z_m + b*z_f
+                # -------------------------
+                a = 0.5
+                b = 0.5
+                z0_mix = a * z0_m + b * z0_f
 
+                # choose a diffusion noise level for validation
+                t_val = int(0.3 * T)   # e.g., 300
+                t = torch.full((B,), t_val, device=device, dtype=torch.long)
+
+                # Gaussian noise (channel noise)
                 torch.manual_seed(0)
-                eps = torch.randn_like(z0)
+                eps = torch.randn_like(z0_mix)
 
-                zT = sqrt_ab[t_val] * z0 + sqrt_1mab[t_val] * eps
+                # forward noising (timestep t_val)
+                zT_mix = sqrt_ab[t_val] * z0_mix + sqrt_1mab[t_val] * eps
 
-                # 3) denoise (reverse diffusion) - 要把 y 傳進去
-                z0_hat = denoise_latent_ddpm(DM, zT, betas, alphas, alpha_bars, y=y_fixed)
+                # -------------------------
+                # 2) run DM twice with different labels
+                #    y=0 -> recover MNIST-like latent
+                #    y=1 -> recover Fashion-like latent
+                # -------------------------
+                y_m = torch.zeros(B, device=device, dtype=torch.long)  # MNIST label
+                y_f = torch.ones(B, device=device, dtype=torch.long)   # Fashion label
 
-                # one-step denoise（也要帶 label）
-                eps_pred = DM(zT, tt, y_fixed)
-                z0_hat_0 = (zT - sqrt_1mab[t_val] * eps_pred) / sqrt_ab[t_val]
+                # predict eps for each label
+                eps_pred_m = DM(zT_mix, t, y_m)
+                eps_pred_f = DM(zT_mix, t, y_f)
 
-                # 4) generate
-                x_hat = G(z0_hat.view(z0_hat.size(0), z_dim, 1, 1))
-                x_hat_0 = G(z0_hat_0.view(z0_hat_0.size(0), z_dim, 1, 1))
-                x_ = G(z0.view(z0.size(0), z_dim, 1, 1))
+                # one-step posterior mean estimate of z0 (like your z0_hat_0)
+                z0_hat_m = (zT_mix - sqrt_1mab[t_val] * eps_pred_m) / sqrt_ab[t_val]
+                z0_hat_f = (zT_mix - sqrt_1mab[t_val] * eps_pred_f) / sqrt_ab[t_val]
 
-                # 5) save
-                latent_mse_direct = F.mse_loss(z0_hat_0, z0).item()
-                latent_mse_full = F.mse_loss(z0_hat, z0).item()
-                print(f"[val] ep={epoch+1} t={t_val} mse_direct={latent_mse_direct:.6f} mse_full={latent_mse_full:.6f}")
+                # -------------------------
+                # 3) metrics (how close to original z0_m / z0_f)
+                # -------------------------
+                mse_m = F.mse_loss(z0_hat_m, z0_m).item()
+                mse_f = F.mse_loss(z0_hat_f, z0_f).item()
+                print(f"[mix-val] ep={epoch+1} t={t_val} mse_to_M={mse_m:.6f} mse_to_F={mse_f:.6f}")
 
-                save_image((x_hat + 1) / 2, f"./save_data/labelDM/dm_recon_ep{epoch+1}.png", nrow=8)
-                save_image((x_hat_0 + 1) / 2, f"./save_data/labelDM/dm_recon_0{epoch+1}_t{t_val}.png", nrow=8)
-                save_image((x_ + 1) / 2, f"./save_data/labelDM/g_recon_ep{epoch+1}.png", nrow=8)
-                # save_image((x_hat + 1) / 2, f"./save_data/labelDM/dm_recon_ep{epoch+1}.png", nrow=8)
-                # save_image((x_hat_0 + 1) / 2, f"./save_data/labelDM/dm_recon_0{epoch+1}_t{t_val}.png", nrow=8)
-                # save_image((x_ + 1) / 2, f"./save_data/labelDM/g_recon_ep{epoch+1}.png", nrow=8)
+                # -------------------------
+                # 4) decode with Generator
+                # -------------------------
+                xhat_m = G(z0_hat_m.view(B, z_dim, 1, 1))
+                xhat_f = G(z0_hat_f.view(B, z_dim, 1, 1))
+
+                # references: decode clean latents too (optional but recommended)
+                xref_m = G(z0_m.view(B, z_dim, 1, 1))
+                xref_f = G(z0_f.view(B, z_dim, 1, 1))
+
+                # -------------------------
+                # 5) save images
+                # -------------------------
+                save_image((xref_m + 1) / 2, f"./save_data/test_labelDM/ref_M_ep{epoch+1}.png", nrow=8)
+                save_image((xref_f + 1) / 2, f"./save_data/test_labelDM/ref_F_ep{epoch+1}.png", nrow=8)
+
+                save_image((xhat_m + 1) / 2, f"./save_data/test_labelDM/mix_recon_as_M_ep{epoch+1}_t{t_val}.png", nrow=8)
+                save_image((xhat_f + 1) / 2, f"./save_data/test_labelDM/mix_recon_as_F_ep{epoch+1}_t{t_val}.png", nrow=8)
+
+                # save model
+                torch.save(DM.state_dict(), "./save_model/DM_latent_label.pth")
+                print("Saved DM: DM_latent_label.pth")
 
             DM.train()
 
