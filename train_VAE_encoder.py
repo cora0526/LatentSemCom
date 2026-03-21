@@ -36,7 +36,7 @@ def train_encoder_invert_gan(
     fixed_x, _ = next(iter(dl))
     fixed_x = fixed_x[:64].to(device)
     fixed_x_cpu = fixed_x.detach().cpu()
-    save_image((fixed_x_cpu + 1) / 2, "./save_data/fixed_x.png",nrow=8)
+    save_image((fixed_x_cpu + 1) / 2, "./save_data/encoder_M/fixed_x.png",nrow=8)
     
     step = 0
     for ep in range(epochs):
@@ -77,10 +77,10 @@ def train_encoder_invert_gan(
                 mu, _ = E(fixed_x)
                 z = mu.view(mu.size(0), z_dim, 1, 1)
                 recon = G(z)
-                save_image((recon + 1) / 2, f"./save_data/invert_recon_ep{ep+1}.png", nrow=8)
+                save_image((recon + 1) / 2, f"./save_data/encoder_M/invert_recon_ep{ep+1}.png", nrow=8)
 
-    torch.save(E.state_dict(), "./save_model/E_invert_to_G_C.pth")
-    print("Saved encoder: E_invert_to_G_C.pth")
+    torch.save(E.state_dict(), "./save_model/E_invert_to_G_C_only.pth")
+    print("Saved encoder: E_invert_to_G_C_only.pth")
 
 if __name__ == "__main__":
     run = wandb.init(

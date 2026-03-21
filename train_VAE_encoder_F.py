@@ -77,7 +77,7 @@ def train_encoder_invert_gan(
                 mu, _ = E(fixed_x)
                 z = mu.view(mu.size(0), z_dim, 1, 1)
                 recon = G(z)
-                save_image((recon + 1) / 2, f"./save_data/invert_recon_ep{ep+1}.png", nrow=8)
+                save_image((recon + 1) / 2, f"./save_data/encoder_F/invert_recon_ep{ep+1}.png", nrow=8)
 
     torch.save(E.state_dict(), "./save_model/E_invert_to_G_F.pth")
     print("Saved encoder: E_invert_to_G_F.pth")
