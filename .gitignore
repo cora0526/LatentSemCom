@@ -9,10 +9,16 @@ venv/
 # torch / checkpoints
 *.pth
 *.pt
+*.npy
 
 # data / outputs
 save_data/
+save_model/
 wandb/
+mnist_jpg
+latent_bits_F/
+latent_bits_M/
+photos3/
 
 # OS
 .DS_Store
