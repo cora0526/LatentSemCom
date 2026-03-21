@@ -25,8 +25,8 @@ def train_wgangp_mnist(
 
     G = Ganerator_MNIST(z_dim=z_dim).to(device)
     D = Discriminator_MNIST().to(device)
-    G.weight_init(mean=0.0, std=0.02)
-    D.weight_init(mean=0.0, std=0.02)
+    # G.weight_init(mean=0.0, std=0.02)
+    # D.weight_init(mean=0.0, std=0.02)
 
     optG = torch.optim.Adam(G.parameters(), lr=lr, betas=(0.0, 0.9))
     optD = torch.optim.Adam(D.parameters(), lr=lr, betas=(0.0, 0.9))
