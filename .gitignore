@@ -19,6 +19,7 @@ mnist_jpg
 latent_bits_F/
 latent_bits_M/
 photos3/
+.png
 
 # OS
 .DS_Store
