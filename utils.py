@@ -152,3 +152,9 @@ def sample_latent_label_cond(model, T, betas, alphas, alpha_bars, y, z_dim, devi
         else:
             z = z0_hat
     return z  # (B, z_dim)
+
+def whiten_latent(z: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
+    # z: (B, z_dim)
+    z = z - z.mean(dim=0, keepdim=True)
+    z = z / (z.std(dim=0, keepdim=True) + eps)
+    return z
