@@ -10,7 +10,7 @@ from mlset_util import import_all_model
 batch_size = 64
 bits = 8
 z_dim = 64
-device = "cpu"
+device = "gpu"
 t_val=300         # 給 DM 評估用
 lam=0.5          # Fashion latent 加到 MNIST latent 的係數
 do_whiten=True     # 是否白化 z_f
@@ -19,6 +19,11 @@ G_path = "./save_model/G_wgangp_C.pth"
 E_path = "./save_model/E_invert_to_G_M_quan.pth"
 E_f_path = "./save_model/E_invert_to_G_F_qaun.pth"
 G,E,E_f = import_all_model()
+
+# lloyd max code book
+lloyd_max_codebook = torch.load(f"./save_data/lloyd_max_codebook/lloyd_codebook_{2**bits}.pth")
+q = lloyd_max_codebook["q"]
+b = lloyd_max_codebook["b"]
 
 # TCP/IP setting
 HOST = '127.0.0.1'
@@ -68,7 +73,8 @@ while(1):
         x_hat_m = bits_to_array(bits_array_m,bits)
         print("bits to array:")
         print(x_hat_m[:100])
-        x_hat_m = dequantization(x_hat_m,bits)
+        x_hat_m = dequantization(x_hat_m,bits=bits)
+        # x_hat_m = dequantization(x_hat_m,bits=bits,type='lloyd',q=q)
         z_m_hat = x_hat_m.reshape(latent_shape_m)
         z_m_hat = torch.tensor(z_m_hat, device=device, dtype=torch.float32)
         with torch.no_grad():
@@ -100,7 +106,8 @@ while(1):
         x_hat_f = bits_to_array(bits_array_f,bits)
         print("bits to array:")
         print(x_hat_f[:100])
-        x_hat_f = dequantization(x_hat_f,bits)
+        x_hat_f = dequantization(x_hat_f,bits=bits)
+        # x_hat_f = dequantization(x_hat_f,bits=bits,type='lloyd',q=q)
         z_f_hat = x_hat_f.reshape(latent_shape_f)
         z_f_hat = torch.tensor(z_f_hat, device=device, dtype=torch.float32)
         with torch.no_grad():

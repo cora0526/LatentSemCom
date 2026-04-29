@@ -5,6 +5,7 @@ from torchvision import datasets, transforms
 from torchvision.utils import save_image, make_grid
 import matplotlib.pyplot as plt
 import socket
+import time
 import numpy as np
 from utils import linear_beta_schedule, denoise_latent_ddpm, whiten_latent
 from com_utils import array_to_bits,quantization,dequantization,bits_to_array, send_to_matlab, send_msg, recv_exact, recv_msg
@@ -23,25 +24,17 @@ E_path = "./save_model/E_invert_to_G_C_only.pth"
 E_f_path = "./save_model/E_invert_to_G_F.pth"
 DM_path = "./save_model/DM_latent_label_with_Channel_1.pth.pth"
 
+# lloyd max codebook
+lloyd_max_codebook = torch.load(f"./save_data/lloyd_max_codebook/lloyd_codebook_{2**bits}.pth")
+q = lloyd_max_codebook["q"]
+b = lloyd_max_codebook["b"]    
+
 # TCP/IP setting
 HOST = '127.0.0.1'
 PORT = 5000
 
 client = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 client.connect((HOST, PORT))
-
-# DM setting
-T = 1000    
-betas = linear_beta_schedule(T, device=device)  #第T步時的噪聲
-alphas = 1.0 - betas    
-alpha_bars = torch.cumprod(alphas, dim=0)   #訊號保留的比例
-sqrt_ab = torch.sqrt(alpha_bars)    #forwarding noise
-sqrt_1mab = torch.sqrt(1 - alpha_bars)
-# fixed timestep tensor
-tt = torch.full((batch_size,), int(t_val), device=device, dtype=torch.long)
-
-
-
 
 tfm = transforms.Compose([
         transforms.ToTensor(),
@@ -61,9 +54,15 @@ dl_f = DataLoader(ds_f, batch_size=batch_size, shuffle=True, num_workers=0, pin_
 # save_image((x_f + 1) / 2, f"./save_data/test_channel/input_fashion.png", nrow=8)
 
 
-G,E,E_f,DM = import_all_model()
-
+G,E,E_f = import_all_model()
+a = 0
 for i, ((x_m, _), (x_f, _)) in enumerate(zip(dl, dl_f)):
+    if i == 0 and a == 0:
+        a == 1
+    elif i == 1 and a == 1:
+        i == 0
+        a == 2
+
     data_id = i
     print("ID: ",data_id)
 
@@ -74,6 +73,8 @@ for i, ((x_m, _), (x_f, _)) in enumerate(zip(dl, dl_f)):
     x_f = x_f[:25]
     grid_m = make_grid(x_m, nrow=5, normalize=True)
     grid_f = make_grid(x_f, nrow=5, normalize=True)
+    save_image(grid_m, f"./save_data/test_sys_tx/transmit_M_{i}.png", nrow=5)
+    save_image(grid_f, f"./save_data/test_sys_tx/transmit_F_{i}.png", nrow=5)
     # 顯示
     plt.figure(figsize=(5,5))
     plt.imshow(grid_m.permute(1, 2, 0).cpu())
@@ -94,34 +95,35 @@ for i, ((x_m, _), (x_f, _)) in enumerate(zip(dl, dl_f)):
     with torch.no_grad():
         z_m, logvar = E(x_m)
         z_f, logvar = E_f(x_f)
-    latent_shape = list(z_m.shape)
-    print("latent_shape:")
-    print(latent_shape)
-    print("MNIST Latent:")
-    print(z_m)
-    print("FashionMNIST Latent:")
-    print(z_f)
+    latent_shape_m = list(z_m.shape)
+    latent_shape_f = list(z_f.shape)
 
     # quantization
     z_m_q,_,_ = quantization (z_m,bits)
     z_f_q,_,_ = quantization (z_f,bits)
-    print("===== z_q =====")
-    print("type:", type(z_m_q))
-    print("dtype:", z_m_q.dtype)
-    print("shape:", z_m_q.shape)
-    print("numel:", z_m_q.numel())   # 總元素數
-    print()
+    # z_m_q, _, _= quantization(z_m,type='lloyd',q=q,b=b)
+    # z_f_q, _, _= quantization(z_f,type='lloyd',q=q,b=b)
+    # print("===== z_q =====")
+    # print("type:", type(z_m_q))
+    # print("dtype:", z_m_q.dtype)
+    # print("shape:", z_m_q.shape)
+    # print("numel:", z_m_q.numel())   # 總元素數
+    # print()
     # 轉 bit
     bits_array_m = array_to_bits(z_m_q, bit_width=bits)
     bits_array_f = array_to_bits(z_f_q, bit_width=bits)
     # print(bits_array_m)
+    print("Send m to matlab:")
+    print("qantization:")
+    print(z_m_q[:100])
+    print("bits:")
+    print(bits_array_m[:100])
 
     data_id_bits = [int(b) for b in format(data_id, '010b')]     # 10 bits
     # 例如 data_id=3 → [0,0,0,0,0,0,0,0,1,1]
-
     size_val_m = bits_array_m.size
     size_bits_m = [int(b) for b in format(size_val_m, '016b')]   # 16 bits
-    label_bits_m = [0, 0, 0, 0, 0]
+    label_bits_m = [0, 0, 0, 0,0]
     bits_array_m = data_id_bits + label_bits_m + size_bits_m + bits_array_m.tolist()
     # bits_array_m = bits_array_m.tolist()
     # send msg to matlab
@@ -140,13 +142,19 @@ for i, ((x_m, _), (x_f, _)) in enumerate(zip(dl, dl_f)):
 
         if (reply["ID"]==data_id):
             print(data_id)
-            break;
-    
+            time.sleep(0.5)
+            break
+
+    print("Send f to matlab:")
+    print("qantization:")
+    print(z_f_q[:100])
+    print("bits:")
+    print(bits_array_f[:100])
     size_val_f = bits_array_f.size
     size_bits_f = [int(b) for b in format(size_val_f, '016b')]
     label_bits_f = [1, 1, 1, 1, 1]
     bits_array_f = data_id_bits + label_bits_f + size_bits_f + bits_array_f.tolist()
-    # bits_array_f =  bits_array_f.tolist()
+    # bits_array_f = bits_array_f.tolist()
     msg_f = {
         "ID": data_id,
         "type": "bits",
@@ -163,15 +171,23 @@ for i, ((x_m, _), (x_f, _)) in enumerate(zip(dl, dl_f)):
 
         if (reply["ID"]==data_id):
             # print(data_id)
-            break;
-    
+            time.sleep(0.5)
+            break
+    print("======================================")
     while True:
         receive = recv_msg(client)
         print("Reply from SDR:", reply)
         if (receive["status"]==201):
             data_id+=1
-            break;
+            break
 
     
-    if i == 50:
+    if i == 9:
+        msg_end = {
+        "ID": 9999,
+        "type": "end",
+        "label": 999,
+        "bits": 99999
+        }
+        send_msg(client, msg_end)
         break

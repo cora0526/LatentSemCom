@@ -116,9 +116,13 @@ class LabelCondLatentDenoiser(nn.Module):
         self.net = nn.Sequential(
             nn.Linear(in_dim, 256),
             nn.SiLU(),
-            nn.Linear(256, 256),
+            nn.Linear(256, 512),
             nn.SiLU(),
-            nn.Linear(256, z_dim),  # predict eps (same shape as z)
+            nn.Linear(512, 512),
+            nn.SiLU(),
+            nn.Linear(512, 256),
+            nn.SiLU(),
+            nn.Linear(256, z_dim),
         )
 
     def forward(self, zt: torch.Tensor, t: torch.Tensor, y: torch.Tensor):

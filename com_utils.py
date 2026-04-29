@@ -5,42 +5,101 @@ import socket
 import json
 import struct
 
-def quantization(z, bits=8, clip_range=(-4.0, 4.0)):
+def quantization(z, bits=8, clip_range=(-4.0, 4.0), type="uni", q=None, b=None):
     """
-    Uniform quantization with fixed range.
+    Uniform quantization with fixed range.  
+    lloyd max with extra input.
 
     input:
         z : float tensor
         bits : bit 數
         clip_range : (min, max)
+        type : uni or lloyd
 
     output:
-        z_q   : quantized int tensor
-        z_rec : recovered float tensor
-        scale : quantization step size
+        uni:
+            z_q   : quantized int tensor
+            z_rec : recovered float tensor
+            scale : quantization step size
+        lloyd:
+            indices: quantization level
+            z_rec : q
+
+    """
+    
+    if type == "uni":
+        # ===== Uniform quantization =====
+        z_min, z_max = clip_range
+
+        # quantization level
+        qmax = 2**bits - 1   # 255
+        qmin = 0
+
+        # step size
+        scale = (z_max - z_min) / (qmax - qmin)
+
+        # clip
+        z_clipped = torch.clamp(z, z_min, z_max)
+        z_shifted = z_clipped - z_min
+        # quantize
+        z_q = torch.round(z_shifted / scale).clamp(qmin, qmax).to(torch.uint8)
+
+        # recover
+        z_rec = z_q.float() * scale + z_min
+        return z_q, z_rec, scale
+
+    elif type == "lloyd":
+        # ===== Lloyd-Max quantization =====
+        assert q is not None and b is not None, "Need q and b for Lloyd quantization"
+        q = q.to(z.device)
+        b = b.to(z.device)
+        # 分群（得到 index）
+        indices = torch.bucketize(z, b)
+        # 還原
+        z_rec = q[indices]
+
+        return indices, z_rec, None
+
+    else:
+        raise ValueError("type must be 'uni' or 'lloyd'")
+    
+
+def lloyd_max(x, K=265, max_iter=50):
+    """
+    x: input data (1D tensor)
+    K: number of quantization levels
     """
 
-    z_min, z_max = clip_range
+    x = x.flatten()
 
-    # quantization level
-    qmax = 2**(bits - 1) - 1
-    qmin = -2**(bits - 1)
+    # 初始化 levels（均勻）
+    q = torch.linspace(x.min(), x.max(), K)
 
-    # step size
-    scale = (z_max - z_min) / (qmax - qmin)
+    for _ in range(max_iter):
 
-    # clip
-    z_clipped = torch.clamp(z, z_min, z_max)
+        # Step 1: boundaries
+        b = (q[:-1] + q[1:]) / 2
 
-    # quantize
-    z_q = torch.round((z_clipped - z_min) / scale + qmin).clamp(qmin, qmax).to(torch.int8)
+        # Step 2: 分群
+        indices = torch.bucketize(x, b)
 
-    # recover
-    z_rec = (z_q.float() - qmin) * scale + z_min
+        # Step 3: 更新 levels
+        new_q = torch.zeros_like(q)
+        for k in range(K):
+            if (indices == k).sum() > 0:
+                new_q[k] = x[indices == k].mean()
+            else:
+                new_q[k] = q[k]  # 避免空 cluster
 
-    return z_q, z_rec, scale
+        # 收斂檢查
+        if torch.norm(new_q - q) < 1e-6:
+            break
 
-def dequantization(z_q, bits=8, clip_range=(-4.0, 4.0)):
+        q = new_q
+
+    return q, b
+
+def dequantization(z_q, bits=8, type='uni', clip_range=(-4.0, 4.0), q=None):
     """
     將 quantized int 還原成 float
 
@@ -53,29 +112,42 @@ def dequantization(z_q, bits=8, clip_range=(-4.0, 4.0)):
     output:
         z_rec : float tensor
     """
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    
-    z_min, z_max = clip_range
+    if type == 'uni':
+        z_min, z_max = clip_range
 
-    qmax = 2**(bits - 1) - 1
-    qmin = -2**(bits - 1)
+        # unsigned quantization range
+        qmin = 0
+        qmax = 2**bits - 1
 
-    scale = (z_max - z_min) / (qmax - qmin)
-    
-    if isinstance(z_q, np.ndarray):
-        z_q = torch.from_numpy(z_q)
+        scale = (z_max - z_min) / (qmax - qmin)
 
-    # device 對齊（可選）
-    if device is not None:
-        z_q = z_q.to(device)
+        if isinstance(z_q, np.ndarray):
+            z_q = torch.from_numpy(z_q)
 
-    # 轉 float
-    z_q = z_q.float()
+        # 跟輸入保持同 device，不要自己硬切 cuda/cpu
+        z_q = z_q.float()
 
-    # dequantize
-    z_rec = (z_q - qmin) * scale + z_min
+        # recover back to original range
+        z_rec = z_q * scale + z_min
 
-    return z_rec
+        return z_rec
+    elif type == 'lloyd':
+        assert q is not None, "Need q for Lloyd dequantization"
+
+        if isinstance(z_q, np.ndarray):
+            z_q = torch.from_numpy(z_q)
+
+        if isinstance(q, np.ndarray):
+            q = torch.from_numpy(q)
+
+        q = q.to(z_q.device)
+        z_q = z_q.long()   # index 要是整數型別
+
+        z_rec = q[z_q]
+        return z_rec
+
+    else:
+        raise ValueError("type must be 'uni' or 'lloyd'")
 
 
 
@@ -93,17 +165,21 @@ def array_to_bits(x, bit_width=8):
     if isinstance(x, torch.Tensor):
         x = x.detach().cpu().numpy()
 
-    # 轉 uint8
-    x = x.astype(np.uint8)
+    x = np.asarray(x)
 
-    # unpack 成 8 bits
-    bits = np.unpackbits(x[:, None], axis=1, bitorder="little")
+    assert 1 <= bit_width <= 8, "bit_width 必須在 1~8 之間"
+
+    # 配合 unsigned quantization，直接轉 uint8
+    x_flat = x.reshape(-1).astype(np.uint8)
+
+    # 每個元素展成 8 bits
+    bits = np.unpackbits(x_flat[:, None], axis=1, bitorder="little")
 
     # 只保留前 bit_width 個 bits
     bits = bits[:, :bit_width]
 
-    # 展平
-    bits = bits.reshape(-1)
+    # 展平成 1D
+    bits = bits.reshape(-1).astype(np.uint8)
 
     return bits
 
@@ -147,10 +223,7 @@ def bits_to_array(x_hat, bit_width=8, shape=None, return_tensor=False, dtype=Non
         x_uint8 = x_uint8.reshape(shape)
 
     # bit_width=8 時，通常你原本是 int8 量化值，要轉回 signed
-    if bit_width == 8:
-        x_rec = x_uint8.view(np.int8)
-    else:
-        x_rec = x_uint8
+    x_rec = x_uint8
 
     if return_tensor:
         if dtype is None:
@@ -197,3 +270,21 @@ def recv_msg(sock):
     msg_len = struct.unpack('!I', header)[0]
     payload = recv_exact(sock, msg_len)
     return json.loads(payload.decode('utf-8'))
+
+# ---------------------------------------------------------------
+
+def quantization_t(x, bits=8):
+    """
+    x: torch.Tensor 或 numpy array, uint8, range 0~255
+    bits: 1~8
+    return: uint8, range 0~255
+    """
+    if isinstance(x, torch.Tensor):
+        x = x.cpu().numpy()
+
+    levels = 2**bits - 1
+    x_norm = x.astype(np.float32) / 255.0
+    x_q = np.round(x_norm * levels)
+    x_rec = x_q / levels * 255.0
+
+    return x_rec.astype(np.uint8)
