@@ -136,3 +136,41 @@ class LabelCondLatentDenoiser(nn.Module):
         ye = self.y_emb(y)                  # (B, ydim)
         h = torch.cat([zt, te, ye], dim=1)  # (B, z_dim+tdim+ydim)
         return self.net(h)
+    
+
+
+class DDPMWaveDenoiser1D(nn.Module):
+    def __init__(self, ch=64, time_dim=128):
+        super().__init__()
+
+        self.time_proj = nn.Sequential(
+            nn.Linear(time_dim, ch),
+            nn.ReLU(),
+            nn.Linear(ch, ch)
+        )
+
+        self.conv1 = nn.Conv1d(2, ch, 9, padding=4)
+        self.conv2 = nn.Conv1d(ch, ch, 9, padding=4)
+        self.conv3 = nn.Conv1d(ch, ch, 9, padding=4)
+        self.conv4 = nn.Conv1d(ch, ch, 9, padding=4)
+        self.out = nn.Conv1d(ch, 2, 9, padding=4)
+
+        self.act = nn.ReLU()
+        self.time_dim = time_dim
+
+    def forward(self, x, t):
+
+        temb = timeembedding(t, self.time_dim)
+        temb = self.time_proj(temb)
+        temb = temb.unsqueeze(-1)   # [B, ch, 1]
+
+        h = self.conv1(x)
+        h = self.act(h + temb)
+
+        h = self.act(self.conv2(h) + temb)
+        h = self.act(self.conv3(h) + temb)
+        h = self.act(self.conv4(h) + temb)
+
+        out = self.out(h)
+
+        return out

@@ -1,5 +1,8 @@
 import torch
 import torch.nn.functional as F
+import os
+import numpy as np
+from torch.utils.data import Dataset
 
 def gradient_penalty(discriminator, real_data, fake_data, device='cpu'):
     batch_size = real_data.size(0)
@@ -158,3 +161,70 @@ def whiten_latent(z: torch.Tensor, eps: float = 1e-6) -> torch.Tensor:
     z = z - z.mean(dim=0, keepdim=True)
     z = z / (z.std(dim=0, keepdim=True) + eps)
     return z
+
+
+
+
+class WaveformDataset(Dataset):
+    def __init__(self, data_dir, snr_range=(10,30), sir_range=(-5,10)):
+        self.data_dir = data_dir
+        self.files = sorted([
+            os.path.join(data_dir, f)
+            for f in os.listdir(data_dir)
+            if f.endswith(".bin")
+        ])
+
+        self.snr_range = snr_range
+        self.sir_range = sir_range
+
+        self.min_len = min(
+            len(self.read_bin(f))
+            for f in self.files
+        )
+
+        print("min_len =", self.min_len)
+
+    def read_bin(self, path):
+        tmp = np.fromfile(path, dtype=np.float32)
+        sn = tmp[0::2] + 1j * tmp[1::2]
+        return sn.astype(np.complex64)
+
+    def __len__(self):
+        return 1000
+
+    def __getitem__(self, idx):
+        idx1, idx2 = np.random.choice(len(self.files), 2, replace=False)
+
+        sn1 = self.read_bin(self.files[idx1])[:self.min_len]
+        sn2 = self.read_bin(self.files[idx2])[:self.min_len]
+
+        h1 = (np.random.randn() + 1j*np.random.randn()) / np.sqrt(2)
+        h2 = (np.random.randn() + 1j*np.random.randn()) / np.sqrt(2)
+
+        target = h1 * sn1
+        interf = h2 * sn2
+
+        sir_db = np.random.uniform(*self.sir_range)
+
+        p_tar = np.mean(np.abs(target)**2)
+        p_int = np.mean(np.abs(interf)**2)
+
+        alpha = np.sqrt(p_tar / (p_int * 10**(sir_db/10)))
+        interf = interf * alpha
+
+        snr_db = np.random.uniform(*self.snr_range)
+        noise_power = p_tar / (10**(snr_db/10))
+
+        noise = np.sqrt(noise_power/2) * (
+            np.random.randn(len(sn1)) + 1j*np.random.randn(len(sn1))
+        )
+
+        y = target + interf + noise
+
+        x = np.stack([np.real(y), np.imag(y)])
+        t = np.stack([np.real(target), np.imag(target)])
+
+        return (
+            torch.tensor(x, dtype=torch.float32),
+            torch.tensor(t, dtype=torch.float32)
+        )
