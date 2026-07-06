@@ -2,7 +2,10 @@ import torch
 import torch.nn.functional as F
 import os
 import numpy as np
+import scipy.io as sio
 from torch.utils.data import Dataset
+import glob
+from PIL import Image
 
 def gradient_penalty(discriminator, real_data, fake_data, device='cpu'):
     batch_size = real_data.size(0)
@@ -33,36 +36,6 @@ def vae_loss(x_hat, x, mu, logvar, beta=1.0):
 
 def linear_beta_schedule(T, beta_start=1e-4, beta_end=2e-2, device="cuda"):
     return torch.linspace(beta_start, beta_end, T, device=device)
-
-# @torch.no_grad()
-# def denoise_latent_ddpm(DM, zT, betas, alphas, alpha_bars,t_start=None):
-#     """
-#     zT: (B, z_dim)  noisy latent at time T-1
-#     return z0_hat: (B, z_dim)
-#     """
-#     device = zT.device
-#     T = betas.size(0)
-#     if t_start is None:
-#         t_start = T - 1
-
-#     sqrt_ab = torch.sqrt(alpha_bars)              # sqrt(alpha_bar_t)
-#     sqrt_1mab = torch.sqrt(1 - alpha_bars)        # sqrt(1-alpha_bar_t)
-
-#     z = zT
-#     for t in reversed(range(t_start + 1)):
-#         tt = torch.full((z.size(0),), t, device=device, dtype=torch.long)
-#         eps = DM(z, tt)
-
-#         # predict x0 (here x0 is latent z0)
-#         z0_hat = (z - sqrt_1mab[t] * eps) / (sqrt_ab[t] + 1e-12)
-
-#         if t == 0:
-#             z = z0_hat
-#         else:
-#             # deterministic update to t-1 (DDIM eta=0)
-#             z = sqrt_ab[t - 1] * z0_hat + sqrt_1mab[t - 1] * eps
-
-#     return z
 
 @torch.no_grad()
 def denoise_latent_ddpm(DM, zT, betas, alphas, alpha_bars, y, t_start=None):
@@ -228,3 +201,47 @@ class WaveformDataset(Dataset):
             torch.tensor(x, dtype=torch.float32),
             torch.tensor(t, dtype=torch.float32)
         )
+    
+class IQDataset(Dataset):
+    def __init__(self, folder):
+
+        self.files = sorted([
+            os.path.join(folder, f)
+            for f in os.listdir(folder)
+            if f.endswith(".mat")
+        ])
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+
+        mat = sio.loadmat(self.files[idx])
+
+        clean = torch.tensor(
+            mat["clean_iq"],
+            dtype=torch.float32
+        )
+
+        noisy = torch.tensor(
+            mat["noisy_iq"],
+            dtype=torch.float32
+        )
+
+        return noisy, clean
+
+class SatelliteDataset(Dataset):
+    def __init__(self, root, transform=None):
+        self.files = sorted(glob.glob(os.path.join(root, "*_sat_*.jpg")))
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        img = Image.open(self.files[idx]).convert("RGB")
+
+        if self.transform:
+            img = self.transform(img)
+
+        return img

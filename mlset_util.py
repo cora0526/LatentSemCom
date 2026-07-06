@@ -6,12 +6,19 @@ def import_all_model (
         z_dim=64, 
         device="cuda", 
         G_path = "./save_model/G_wgangp_C.pth",
+        G_f_path = "./save_model/G_wgangp_C.pth",
         E_path = "./save_model/E_invert_to_G_C_only.pth",
         E_f_path = "./save_model/E_invert_to_G_F.pth"):
     G = Ganerator_MNIST(z_dim=z_dim).to(device)
     G.load_state_dict(torch.load(G_path))
     G.eval()
     for p in G.parameters():
+        p.requires_grad = False
+
+    G_f = Ganerator_MNIST(z_dim=z_dim).to(device)
+    G_f.load_state_dict(torch.load(G_f_path))
+    G_f.eval()
+    for p in G_f.parameters():
         p.requires_grad = False
 
     E = VAE_Encoder_MNIST(latent_dim=z_dim).to(device)
@@ -32,7 +39,7 @@ def import_all_model (
     # for p in DM.parameters():
     #     p.requires_grad = False
 
-    return G,E,E_f
+    return G,G_f,E,E_f
 
 def mse(img1, img2):
     return torch.mean((img1 - img2) ** 2)

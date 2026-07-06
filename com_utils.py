@@ -288,3 +288,44 @@ def quantization_t(x, bits=8):
     x_rec = x_q / levels * 255.0
 
     return x_rec.astype(np.uint8)
+
+
+def mimo_2x2_channel_zf(z_m, z_f, snr_db):
+    """
+    z_m: [B, z_dim]
+    z_f: [B, z_dim]
+
+    return:
+        z_m_hat, z_f_hat
+    """
+
+    device = z_m.device
+
+    H = torch.tensor([
+        [1.0, 0.15],
+        [0.10, 0.90]
+    ], dtype=torch.float32, device=device)
+
+    H = H / torch.norm(H, p="fro") * torch.sqrt(torch.tensor(2.0, device=device))
+
+    # [B, z_dim, 2]
+    x_pair = torch.stack([z_m, z_f], dim=-1)
+
+    # y = Hx + n
+    y_pair = torch.matmul(x_pair, H.T)
+
+    signal_power = torch.mean(y_pair ** 2)
+    snr_linear = 10 ** (snr_db / 10)
+    noise_power = signal_power / snr_linear
+
+    noise = torch.sqrt(noise_power) * torch.randn_like(y_pair)
+    y_pair = y_pair + noise
+
+    # ZF equalization: x_hat = H^{-1} y
+    H_inv = torch.inverse(H)
+    x_hat_pair = torch.matmul(y_pair, H_inv.T)
+
+    z_m_hat = x_hat_pair[:, :, 0]
+    z_f_hat = x_hat_pair[:, :, 1]
+
+    return z_m_hat, z_f_hat
