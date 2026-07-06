@@ -127,10 +127,10 @@ class LabelCondLatentDenoiser(nn.Module):
 
     def forward(self, zt: torch.Tensor, t: torch.Tensor, y: torch.Tensor):
         """
-        zt: (B, z_dim) continuous latent at time t
-        t:  (B,) long
+        zt: (B, z_dim) received / noisy / mixed latent
+        t:  (B,) long, denoising level or dummy timestep
         y:  (B,) long class label
-        return eps_pred: (B, z_dim)
+        return z_hat: (B, z_dim) predicted clean target latent
         """
         te = timeembedding(t, self.tdim)     # (B, tdim)
         ye = self.y_emb(y)                  # (B, ydim)
@@ -174,3 +174,177 @@ class DDPMWaveDenoiser1D(nn.Module):
         out = self.out(h)
 
         return out
+
+class IQDenoiser(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+        self.net = nn.Sequential(
+
+            nn.Conv1d(2, 32, 9, padding=4),
+            nn.ReLU(),
+
+            nn.Conv1d(32, 64, 9, padding=4),
+            nn.ReLU(),
+
+            nn.Conv1d(64, 32, 9, padding=4),
+            nn.ReLU(),
+
+            nn.Conv1d(32, 2, 9, padding=4)
+        )
+
+    def forward(self, x):
+        return self.net(x)    
+
+class ResBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+        self.block = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, dim * 2),
+            nn.SiLU(),
+            nn.Linear(dim * 2, dim),
+        )
+
+    def forward(self, x):
+        return x + self.block(x)
+
+
+class LabelCondLatentDenoiserDeep(nn.Module):
+    def __init__(
+        self,
+        num_classes: int,
+        z_dim: int = 64,
+        tdim: int = 128,
+        ydim: int = 64,
+        hidden_dim: int = 512,
+        num_blocks: int = 6,
+    ):
+        super().__init__()
+
+        self.tdim = tdim
+        self.z_dim = z_dim
+        self.num_classes = num_classes
+
+        self.y_emb = nn.Embedding(num_classes, ydim)
+
+        in_dim = z_dim + tdim + ydim
+
+        self.input = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.SiLU(),
+        )
+
+        self.blocks = nn.Sequential(
+            *[ResBlock(hidden_dim) for _ in range(num_blocks)]
+        )
+
+        self.output = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, z_dim),
+        )
+
+    def forward(self, zt, t, y):
+        te = timeembedding(t, self.tdim).to(zt.device)
+        ye = self.y_emb(y)
+
+        h = torch.cat([zt, te, ye], dim=1)
+
+        h = self.input(h)
+        h = self.blocks(h)
+
+        delta = self.output(h)
+
+        # residual denoising: 學修正量
+        z_hat = zt + delta
+
+        return z_hat
+    
+class Generator_Satellite(nn.Module):
+    def __init__(self, z_dim=128, out_ch=3):
+        super().__init__()
+
+        self.model = nn.Sequential(
+            nn.ConvTranspose2d(z_dim, 512, 4, 1, 0),  # 1 -> 4
+            nn.BatchNorm2d(512),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(512, 256, 4, 2, 1),    # 4 -> 8
+            nn.BatchNorm2d(256),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(256, 128, 4, 2, 1),    # 8 -> 16
+            nn.BatchNorm2d(128),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(128, 64, 4, 2, 1),     # 16 -> 32
+            nn.BatchNorm2d(64),
+            nn.ReLU(True),
+
+            nn.ConvTranspose2d(64, out_ch, 4, 2, 1),  # 32 -> 64
+            nn.Tanh()
+        )
+
+    def forward(self, z):
+        return self.model(z)
+    
+class Critic_Satellite(nn.Module):
+    def __init__(self, in_ch=3):
+        super().__init__()
+
+        self.model = nn.Sequential(
+            nn.Conv2d(in_ch, 64, 4, 2, 1),       # 64 -> 32
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(64, 128, 4, 2, 1),         # 32 -> 16
+            nn.InstanceNorm2d(128, affine=True),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(128, 256, 4, 2, 1),        # 16 -> 8
+            nn.InstanceNorm2d(256, affine=True),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(256, 512, 4, 2, 1),        # 8 -> 4
+            nn.InstanceNorm2d(512, affine=True),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(512, 1, 4, 1, 0)           # 4 -> 1
+        )
+
+    def forward(self, x):
+        return self.model(x).view(-1)
+    
+class Encoder_Satellite(nn.Module):
+    def __init__(self, in_ch=3, z_dim=128):
+        super().__init__()
+
+        self.backbone = nn.Sequential(
+            nn.Conv2d(in_ch, 64, 4, 2, 1),      # 64 -> 32
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(64, 128, 4, 2, 1),        # 32 -> 16
+            nn.BatchNorm2d(128),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(128, 256, 4, 2, 1),       # 16 -> 8
+            nn.BatchNorm2d(256),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            nn.Conv2d(256, 512, 4, 2, 1),       # 8 -> 4
+            nn.BatchNorm2d(512),
+            nn.LeakyReLU(0.2, inplace=True),
+        )
+        self.flatten = nn.Flatten()
+
+        self.fc_mu = nn.Linear(512*4*4, z_dim)
+        self.fc_logvar = nn.Linear(512*4*4, z_dim)
+
+    def forward(self, x):
+        h = self.backbone(x)
+        h = self.flatten(h)
+
+        mu = self.fc_mu(h)
+        logvar = self.fc_logvar(h)
+
+        return mu, logvar
