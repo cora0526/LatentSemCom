@@ -4,7 +4,7 @@ from torch.utils.data import DataLoader
 from torchvision import datasets, transforms
 from torchvision.utils import save_image
 from model import Ganerator_MNIST, VAE_Encoder_MNIST
-import wandb
+import os
 
 def train_encoder_invert_gan(
     epochs=20,
@@ -19,12 +19,12 @@ def train_encoder_invert_gan(
         transforms.ToTensor(),
         transforms.Normalize((0.5,), (0.5,))
     ])
-    ds = datasets.MNIST(root=r"D:\Python\SemCom\saved_data", train=True, download=True, transform=tfm)
+    ds = datasets.FashionMNIST(root=r"D:/Python/SemCom/saved_data", train=True, download=True, transform=tfm)
     dl = DataLoader(ds, batch_size=batch_size, shuffle=True, num_workers=0, pin_memory=True)
 
     # ---- load pretrained G ----
     G = Ganerator_MNIST(z_dim=z_dim).to(device)
-    G.load_state_dict(torch.load("./save_model/G_wgangp_C.pth", map_location=device))
+    G.load_state_dict(torch.load("./save_model/G_wgangp_FashionMNIST.pth", map_location=device))
     G.eval()
     for p in G.parameters():
         p.requires_grad = False
@@ -36,7 +36,8 @@ def train_encoder_invert_gan(
     fixed_x, _ = next(iter(dl))
     fixed_x = fixed_x[:64].to(device)
     fixed_x_cpu = fixed_x.detach().cpu()
-    save_image((fixed_x_cpu + 1) / 2, "./save_data/encoder_M/fixed_x.png",nrow=8)
+    os.makedirs(f"./save_data/VAE_FashionMNIST", exist_ok=True)
+    save_image((fixed_x_cpu + 1) / 2, "./save_data/VAE_FashionMNIST/fixed_x.png",nrow=8)
     
     step = 0
     for ep in range(epochs):
@@ -77,28 +78,11 @@ def train_encoder_invert_gan(
                 mu, _ = E(fixed_x)
                 z = mu.view(mu.size(0), z_dim, 1, 1)
                 recon = G(z)
-                save_image((recon + 1) / 2, f"./save_data/encoder_M/invert_recon_ep{ep+1}.png", nrow=8)
+                save_image((recon + 1) / 2, f"./save_data/VAE_FashionMNIST/invert_recon_ep{ep+1}.png", nrow=8)
 
-    torch.save(E.state_dict(), "./save_model/E_invert_to_G_C_only.pth")
-    print("Saved encoder: E_invert_to_G_C_only.pth")
+    torch.save(E.state_dict(), "./save_model/E_invert_to_G_only_FashionMNIST.pth")
+    print("Saved encoder: E_invert_to_G_only_FashionMNIST.pth")
 
 if __name__ == "__main__":
-    run = wandb.init(
-    # Set the wandb entity where your project will be logged (generally your team name).
-    entity="candy273321-national-central-university",
-    # Set the wandb project where this run will be logged.
-    project="VAE-Encoder-invert-GAN",
-    # Track hyperparameters and run metadata.
-    config={
-        "learning_rate": 2e-4,
-        "architecture": "VAE-Encoder",
-        "dataset": "MNIST",
-        "epochs": 20,
-        "batch_size": 128,
-        "z_dim": 64,
-        "device": "cuda"
-    },
-)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = "cuda" 
     train_encoder_invert_gan(device=device)
-    run.finish()
