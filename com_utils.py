@@ -329,3 +329,87 @@ def mimo_2x2_channel_zf(z_m, z_f, snr_db):
     z_f_hat = x_hat_pair[:, :, 1]
 
     return z_m_hat, z_f_hat
+
+def mimo_2x2_channel_zf_train(z_m, z_f, snr_db):
+    """
+    z_m: [B, z_dim]
+    z_f: [B, z_dim]
+
+    return:
+        z_m_hat, z_f_hat
+    """
+
+    if z_m.shape != z_f.shape:
+        raise ValueError(
+            f"Shape mismatch: {z_m.shape} vs {z_f.shape}"
+        )
+
+    device = z_m.device
+    dtype = z_m.dtype
+
+    H = torch.tensor(
+        [
+            [1.0, 0.15],
+            [0.10, 0.90],
+        ],
+        dtype=dtype,
+        device=device,
+    )
+
+    H = (
+        H / torch.linalg.norm(H, ord="fro")
+        * torch.sqrt(
+            torch.tensor(
+                2.0,
+                dtype=dtype,
+                device=device,
+            )
+        )
+    )
+
+    # [B, z_dim, 2]
+    x_pair = torch.stack(
+        [z_m, z_f],
+        dim=-1,
+    )
+
+    # y = Hx
+    y_pair = torch.matmul(
+        x_pair,
+        H.T,
+    )
+
+    # 每個 sample 各自計算 signal power
+    signal_power = torch.mean(
+        y_pair.pow(2),
+        dim=(1, 2),
+        keepdim=True,
+    )
+
+    snr_linear = 10.0 ** (
+        float(snr_db) / 10.0
+    )
+
+    noise_power = (
+        signal_power / snr_linear
+    )
+
+    noise = (
+        torch.sqrt(noise_power)
+        * torch.randn_like(y_pair)
+    )
+
+    y_noisy = y_pair + noise
+
+    # ZF
+    H_inv = torch.linalg.pinv(H)
+
+    x_hat_pair = torch.matmul(
+        y_noisy,
+        H_inv.T,
+    )
+
+    z_m_hat = x_hat_pair[:, :, 0]
+    z_f_hat = x_hat_pair[:, :, 1]
+
+    return z_m_hat, z_f_hat

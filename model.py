@@ -16,7 +16,7 @@ class Ganerator_MNIST(nn.Module):
             nn.ConvTranspose2d(128, 64, kernel_size=4, stride=2, padding=1),
             nn.BatchNorm2d(64),
             nn.ReLU(True),
-
+ 
             nn.ConvTranspose2d(64, out_ch, kernel_size=4, stride=2, padding=1),
             nn.Tanh()
         )
@@ -68,198 +68,7 @@ class VAE_Encoder_MNIST(nn.Module):
         mu = self.fc_mu(h)
         logvar = self.fc_logvar(h)
         return mu, logvar
-    
-# DDPM for MNIST
-def timeembedding(t, dim):
-    # t: (B,) int64
-    half = dim // 2
-    freqs = torch.exp(
-        -math.log(10000) * torch.arange(0, half, device=t.device).float() / (half - 1)
-    )
-    args = t.float().unsqueeze(1) * freqs.unsqueeze(0)
-    emb = torch.cat([torch.sin(args), torch.cos(args)], dim=1)
-    if dim % 2 == 1:
-        emb = F.pad(emb, (0,1))
-    return emb  # (B, dim)
 
-class LatentDenoiser(nn.Module):
-    def __init__(self, tdim=128, z_dim=64):
-        super().__init__()
-        self.tdim = tdim
-
-        self.net = nn.Sequential(
-            nn.Linear(z_dim + tdim, 256),
-            nn.SiLU(),
-            nn.Linear(256, 256),
-            nn.SiLU(),
-            nn.Linear(256, z_dim),
-        )
-
-    def forward(self, zt, t):
-        te = timeembedding(t, self.tdim)
-        h = torch.cat([zt, te], dim=1)
-        return self.net(h)
-    
-# conditional DDPM for MNIST
-class LabelCondLatentDenoiser(nn.Module):
-    def __init__(self, num_classes: int, tdim: int = 128, z_dim: int = 64, ydim: int = 64):
-        super().__init__()
-        self.tdim = tdim
-        self.z_dim = z_dim
-        self.num_classes = num_classes
-
-        # label embedding: y -> (B, ydim)
-        self.y_emb = nn.Embedding(num_classes, ydim)
-
-        in_dim = z_dim + tdim + ydim
-
-        self.net = nn.Sequential(
-            nn.Linear(in_dim, 256),
-            nn.SiLU(),
-            nn.Linear(256, 512),
-            nn.SiLU(),
-            nn.Linear(512, 512),
-            nn.SiLU(),
-            nn.Linear(512, 256),
-            nn.SiLU(),
-            nn.Linear(256, z_dim),
-        )
-
-    def forward(self, zt: torch.Tensor, t: torch.Tensor, y: torch.Tensor):
-        """
-        zt: (B, z_dim) received / noisy / mixed latent
-        t:  (B,) long, denoising level or dummy timestep
-        y:  (B,) long class label
-        return z_hat: (B, z_dim) predicted clean target latent
-        """
-        te = timeembedding(t, self.tdim)     # (B, tdim)
-        ye = self.y_emb(y)                  # (B, ydim)
-        h = torch.cat([zt, te, ye], dim=1)  # (B, z_dim+tdim+ydim)
-        return self.net(h)
-    
-
-
-class DDPMWaveDenoiser1D(nn.Module):
-    def __init__(self, ch=64, time_dim=128):
-        super().__init__()
-
-        self.time_proj = nn.Sequential(
-            nn.Linear(time_dim, ch),
-            nn.ReLU(),
-            nn.Linear(ch, ch)
-        )
-
-        self.conv1 = nn.Conv1d(2, ch, 9, padding=4)
-        self.conv2 = nn.Conv1d(ch, ch, 9, padding=4)
-        self.conv3 = nn.Conv1d(ch, ch, 9, padding=4)
-        self.conv4 = nn.Conv1d(ch, ch, 9, padding=4)
-        self.out = nn.Conv1d(ch, 2, 9, padding=4)
-
-        self.act = nn.ReLU()
-        self.time_dim = time_dim
-
-    def forward(self, x, t):
-
-        temb = timeembedding(t, self.time_dim)
-        temb = self.time_proj(temb)
-        temb = temb.unsqueeze(-1)   # [B, ch, 1]
-
-        h = self.conv1(x)
-        h = self.act(h + temb)
-
-        h = self.act(self.conv2(h) + temb)
-        h = self.act(self.conv3(h) + temb)
-        h = self.act(self.conv4(h) + temb)
-
-        out = self.out(h)
-
-        return out
-
-class IQDenoiser(nn.Module):
-    def __init__(self):
-        super().__init__()
-
-        self.net = nn.Sequential(
-
-            nn.Conv1d(2, 32, 9, padding=4),
-            nn.ReLU(),
-
-            nn.Conv1d(32, 64, 9, padding=4),
-            nn.ReLU(),
-
-            nn.Conv1d(64, 32, 9, padding=4),
-            nn.ReLU(),
-
-            nn.Conv1d(32, 2, 9, padding=4)
-        )
-
-    def forward(self, x):
-        return self.net(x)    
-
-class ResBlock(nn.Module):
-    def __init__(self, dim):
-        super().__init__()
-
-        self.block = nn.Sequential(
-            nn.LayerNorm(dim),
-            nn.Linear(dim, dim * 2),
-            nn.SiLU(),
-            nn.Linear(dim * 2, dim),
-        )
-
-    def forward(self, x):
-        return x + self.block(x)
-
-
-class LabelCondLatentDenoiserDeep(nn.Module):
-    def __init__(
-        self,
-        num_classes: int,
-        z_dim: int = 64,
-        tdim: int = 128,
-        ydim: int = 64,
-        hidden_dim: int = 512,
-        num_blocks: int = 6,
-    ):
-        super().__init__()
-
-        self.tdim = tdim
-        self.z_dim = z_dim
-        self.num_classes = num_classes
-
-        self.y_emb = nn.Embedding(num_classes, ydim)
-
-        in_dim = z_dim + tdim + ydim
-
-        self.input = nn.Sequential(
-            nn.Linear(in_dim, hidden_dim),
-            nn.SiLU(),
-        )
-
-        self.blocks = nn.Sequential(
-            *[ResBlock(hidden_dim) for _ in range(num_blocks)]
-        )
-
-        self.output = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, z_dim),
-        )
-
-    def forward(self, zt, t, y):
-        te = timeembedding(t, self.tdim).to(zt.device)
-        ye = self.y_emb(y)
-
-        h = torch.cat([zt, te, ye], dim=1)
-
-        h = self.input(h)
-        h = self.blocks(h)
-
-        delta = self.output(h)
-
-        # residual denoising: 學修正量
-        z_hat = zt + delta
-
-        return z_hat
     
 class Generator_Satellite(nn.Module):
     def __init__(self, z_dim=128, out_ch=3):
@@ -348,3 +157,287 @@ class Encoder_Satellite(nn.Module):
         logvar = self.fc_logvar(h)
 
         return mu, logvar
+    
+# =========================
+# DDPM Latent Separator
+# MNIST / Satellite
+# =========================
+
+def timeembedding(t, dim):
+    half = dim // 2
+    freqs = torch.exp(
+        -math.log(10000) * torch.arange(0, half, device=t.device).float() / (half - 1)
+    )
+    args = t.float().unsqueeze(1) * freqs.unsqueeze(0)
+    emb = torch.cat([torch.sin(args), torch.cos(args)], dim=1)
+
+    if dim % 2 == 1:
+        emb = F.pad(emb, (0, 1))
+
+    return emb
+
+
+class DDPMResBlock(nn.Module):
+    def __init__(self, dim):
+        super().__init__()
+
+        self.block = nn.Sequential(
+            nn.LayerNorm(dim),
+            nn.Linear(dim, dim * 2),
+            nn.SiLU(),
+            nn.Linear(dim * 2, dim),
+        )
+
+    def forward(self, x):
+        return x + self.block(x)
+
+
+class CondLatentDDPM(nn.Module):
+    """
+    Conditional latent DDPM.
+
+    Input:
+        zt   : noisy target latent
+        t    : diffusion timestep
+        y    : label / source id
+        cond : received mixed latent, e.g. z_rx or [z_rx, H, SNR]
+
+    Output:
+        eps_pred : predicted Gaussian noise
+    """
+
+    def __init__(self,z_dim,cond_dim,num_classes=2,tdim=128,ydim=64,hidden_dim=512,num_blocks=6,):
+        super().__init__()
+
+        self.z_dim = z_dim
+        self.cond_dim = cond_dim
+        self.tdim = tdim
+
+        self.y_emb = nn.Embedding(num_classes, ydim)
+
+        in_dim = z_dim + cond_dim + tdim + ydim
+
+        self.input = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.SiLU(),
+        )
+
+        self.blocks = nn.Sequential(
+            *[DDPMResBlock(hidden_dim) for _ in range(num_blocks)]
+        )
+
+        self.output = nn.Sequential(
+            nn.LayerNorm(hidden_dim),
+            nn.Linear(hidden_dim, z_dim),
+        )
+
+    def forward(self, zt, t, y, cond):
+        te = timeembedding(t, self.tdim).to(zt.device)
+        ye = self.y_emb(y)
+
+        h = torch.cat([zt, cond, te, ye], dim=1)
+
+        h = self.input(h)
+        h = self.blocks(h)
+
+        eps_pred = self.output(h)
+        return eps_pred
+    
+class MNIST_Latent_DDPM(CondLatentDDPM):
+    def __init__(self):
+        super().__init__(
+            z_dim=64,
+            cond_dim=64,
+            num_classes=2,
+            tdim=128,
+            ydim=64,
+            hidden_dim=512,
+            num_blocks=6,
+        )
+
+class Satellite_Latent_DDPM(CondLatentDDPM):
+    def __init__(self, z_dim=256):
+        super().__init__(
+            z_dim=z_dim,
+            cond_dim=z_dim,
+            num_classes=2,
+            tdim=128,
+            ydim=64,
+            hidden_dim=768,
+            num_blocks=8,
+        )
+
+# ============================================================
+# Conditional Generator
+# ============================================================
+class Generator_Satellite_Conditional(nn.Module):
+    def __init__(
+        self,
+        z_dim=256,
+        num_classes=2,
+        label_dim=64,
+        out_ch=3
+    ):
+        super().__init__()
+
+        self.z_dim = z_dim
+        self.num_classes = num_classes
+        self.label_dim = label_dim
+
+        # label: [B] -> [B, label_dim]
+        self.label_embedding = nn.Embedding(num_classes,label_dim)
+
+        # z 和 label embedding 串接
+        input_dim = z_dim + label_dim
+
+        self.model = nn.Sequential(
+            # [B, input_dim, 1, 1] -> [B, 512, 4, 4]
+            nn.ConvTranspose2d(input_dim,512,kernel_size=4,stride=1,padding=0,bias=False),
+            nn.BatchNorm2d(512),
+            nn.ReLU(inplace=True),
+
+            # 4 -> 8
+            nn.ConvTranspose2d(512,256,kernel_size=4,stride=2,padding=1,bias=False),
+            nn.BatchNorm2d(256),
+            nn.ReLU(inplace=True),
+
+            # 8 -> 16
+            nn.ConvTranspose2d(256,128,kernel_size=4,stride=2,padding=1,bias=False),
+            nn.BatchNorm2d(128),
+            nn.ReLU(inplace=True),
+
+            # 16 -> 32
+            nn.ConvTranspose2d(128,64,kernel_size=4,stride=2,padding=1,bias=False),
+            nn.BatchNorm2d(64),
+            nn.ReLU(inplace=True),
+
+            # 32 -> 64
+            nn.ConvTranspose2d(64,out_ch,kernel_size=4,stride=2,padding=1),
+            nn.Tanh()
+        )
+
+    def forward(self, z, labels):
+        """
+        z:
+            [B, z_dim]
+            或 [B, z_dim, 1, 1]
+
+        labels:
+            [B], dtype=torch.long
+        """
+
+        if z.ndim == 4:
+            z = z.flatten(1)
+
+        if z.ndim != 2:
+            raise ValueError(f"z should be [B,z_dim] or [B,z_dim,1,1], "f"but got {z.shape}")
+
+        labels = labels.long()
+
+        label_emb = self.label_embedding(labels)
+
+        # [B, z_dim + label_dim]
+        z_cond = torch.cat([z, label_emb],dim=1)
+
+        # [B, z_dim + label_dim, 1, 1]
+        z_cond = z_cond.unsqueeze(-1).unsqueeze(-1)
+
+        return self.model(z_cond)
+
+
+# ============================================================
+# Conditional Projection Critic
+# ============================================================
+class Critic_Satellite_Conditional(nn.Module):
+    def __init__(
+        self,
+        in_ch=3,
+        num_classes=2,
+        feature_dim=512
+    ):
+        super().__init__()
+
+        self.num_classes = num_classes
+        self.feature_dim = feature_dim
+
+        self.features = nn.Sequential(
+            # 64 -> 32
+            nn.Conv2d(in_ch,64,kernel_size=4,stride=2,padding=1),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # 32 -> 16
+            nn.Conv2d(64,128,kernel_size=4,stride=2,padding=1,bias=False),
+            nn.InstanceNorm2d(128,affine=True),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # 16 -> 8
+            nn.Conv2d(128,256,kernel_size=4,stride=2,padding=1,bias=False),
+            nn.InstanceNorm2d(
+                256,
+                affine=True
+            ),
+            nn.LeakyReLU(0.2, inplace=True),
+
+            # 8 -> 4
+            nn.Conv2d(256,feature_dim,kernel_size=4,stride=2,padding=1,bias=False),
+            nn.InstanceNorm2d(feature_dim,affine=True),nn.LeakyReLU(0.2, inplace=True))
+
+        # unconditional critic score
+        self.output_layer = nn.Linear(feature_dim,1)
+
+        # projection label embedding
+        self.label_embedding = nn.Embedding(num_classes,feature_dim)
+
+    def forward(self, x, labels):
+        """
+        x:
+            [B,3,64,64]
+
+        labels:
+            [B], dtype=torch.long
+
+        return:
+            [B]
+        """
+
+        labels = labels.long()
+
+        # [B, feature_dim, 4, 4]
+        feature_map = self.features(x)
+
+        # global sum pooling
+        # [B, feature_dim]
+        feature = feature_map.sum(dim=(2, 3))
+
+        # unconditional score
+        unconditional_score = (self.output_layer(feature).squeeze(1))
+        
+
+        # label projection
+        label_emb = self.label_embedding(labels)
+
+        projection_score = torch.sum(feature * label_emb,dim=1)
+        
+
+        return (unconditional_score + projection_score)
+    
+class LatentAdapter(nn.Module):
+    """Residual MLP adapter. Starts close to identity."""
+
+    def __init__(self, z_dim=256, hidden_dim=512, residual_scale=0.1):
+        super().__init__()
+        self.residual_scale = residual_scale
+        self.net = nn.Sequential(
+            nn.Linear(z_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.SiLU(),
+            nn.Linear(hidden_dim, z_dim),
+        )
+        nn.init.zeros_(self.net[-1].weight)
+        nn.init.zeros_(self.net[-1].bias)
+
+    def forward(self, z):
+        return z + self.residual_scale * self.net(z)
