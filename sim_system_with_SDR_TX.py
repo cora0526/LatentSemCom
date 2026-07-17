@@ -6,11 +6,13 @@ from torchvision.utils import save_image, make_grid
 import matplotlib.pyplot as plt
 import socket
 import time
+import os
 import numpy as np
 from utils import linear_beta_schedule, denoise_latent_ddpm, whiten_latent
 from com_utils import array_to_bits,quantization,dequantization,bits_to_array, send_to_matlab, send_msg, recv_exact, recv_msg
 from mlset_util import import_all_model
 
+test = 1
 batch_size = 64
 bits = 8
 z_dim = 64
@@ -22,10 +24,12 @@ out_dir="./save_data/test_sys"
 G_path = "./save_model/G_wgangp_C.pth"
 E_path = "./save_model/E_invert_to_G_C_only.pth"
 E_f_path = "./save_model/E_invert_to_G_F.pth"
-DM_path = "./save_model/DM_latent_label_with_Channel_1.pth.pth"
+DM_path = "./save_model/DM_latent_label_with_Channel_1.pth"
+save_root = f"D:/Python/SysTest/test_{test}"
+os.makedirs(save_root, exist_ok=True)
 
 # lloyd max codebook
-lloyd_max_codebook = torch.load(f"./save_data/lloyd_max_codebook/lloyd_codebook_{2**bits}.pth")
+lloyd_max_codebook = torch.load(f"./save_data/lloyd_max_codebook/lloyd_codebook_{bits}.pth")
 q = lloyd_max_codebook["q"]
 b = lloyd_max_codebook["b"]    
 
@@ -73,8 +77,8 @@ for i, ((x_m, _), (x_f, _)) in enumerate(zip(dl, dl_f)):
     x_f = x_f[:25]
     grid_m = make_grid(x_m, nrow=5, normalize=True)
     grid_f = make_grid(x_f, nrow=5, normalize=True)
-    save_image(grid_m, f"./save_data/test_sys_tx/transmit_M_{i}.png", nrow=5)
-    save_image(grid_f, f"./save_data/test_sys_tx/transmit_F_{i}.png", nrow=5)
+    save_image(grid_m, f"D:/Python/SysTest/test_{test}/transmit_M_{i}.png", nrow=5)
+    save_image(grid_f, f"D:/Python/SysTest/test_{test}/transmit_F_{i}.png", nrow=5)
     # 顯示
     plt.figure(figsize=(5,5))
     plt.imshow(grid_m.permute(1, 2, 0).cpu())
