@@ -1,59 +1,347 @@
+import os
 import pandas as pd
 import matplotlib.pyplot as plt
 
-# =====================
-# CSV
-# =====================
-file_pro = "D:/Python/SysTest/propose_VAE_GAN_2by2/metric_results.csv"
-file_vae = "D:/Python/SysTest/baseline_vae_2by2/metric_results.csv"
-file_jscc = "D:/Python/SysTest/baseline_JSCC/metric_results.csv"
-file_sep_pro = 'D:/Python/SysTest/propose_septerate_GAN/metric_results.csv'
-file_traditional = 'D:/Python/SysTest/baseline_JPEG2000_MNIST/metric_results.csv'
 
-data_pro = pd.read_csv(file_pro, comment="#")
-data_vae = pd.read_csv(file_vae, comment="#")
-data_jscc = pd.read_csv(file_jscc, comment="#")
-data_seppro = pd.read_csv(file_sep_pro, comment="#")
-data_traditional = pd.read_csv(file_traditional, comment="#")
+# ============================================================
+# Settings
+# ============================================================
 
-datasets = {
-    "Proposed": data_pro,
-    "VAE": data_vae,
-    "DeepJSCC": data_jscc,
-    "Sep_pro": data_seppro,
-    "Traditional":  data_traditional
-}
+CSV_PATH = (
+    r"D:\VAE_GAN_DM\save_data\Deep_WGANGP_VAE_DDPM"
+    r"\ddpm_label_cond_siso_random_alpha_training_history.csv"
+)
 
-fig, axs = plt.subplots(2, 2, figsize=(12, 9))
+SAVE_DIR = (
+    r"D:\VAE_GAN_DM\save_data\Deep_WGANGP_VAE_DDPM"
+    r"\convergence_plot"
+)
 
-plots = [
-    ("MNIST_PSNR_mean", "MNIST PSNR", "PSNR (dB)", axs[0,0]),
-    ("MNIST_SSIM_mean", "MNIST SSIM", "SSIM", axs[0,1]),
-    ("FashionMNIST_PSNR_mean", "FashionMNIST PSNR", "PSNR (dB)", axs[1,0]),
-    ("FashionMNIST_SSIM_mean", "FashionMNIST SSIM", "SSIM", axs[1,1]),
-]
+os.makedirs(SAVE_DIR, exist_ok=True)
 
-markers = ['o', 's', '^', 'D', 'x', '*']
+PNG_PATH = os.path.join(
+    SAVE_DIR,
+    "DDPM_Training_Convergence.png"
+)
 
-for col, title, ylabel, ax in plots:
+PDF_PATH = os.path.join(
+    SAVE_DIR,
+    "DDPM_Training_Convergence.pdf"
+)
 
-    for (name, df), marker in zip(datasets.items(), markers):
 
-        ax.plot(df["SNR"],
-                df[col],
-                marker=marker,
-                linewidth=2,
-                markersize=5,
-                label=name)
+# ============================================================
+# Load CSV
+# ============================================================
 
-    ax.set_xlabel("SNR (dB)")
-    ax.set_ylabel(ylabel)
-    ax.set_title(title)
-    ax.grid(True)
-    ax.legend()
+df = pd.read_csv(CSV_PATH)
+
+df.columns = df.columns.str.strip()
+
+print("Columns:")
+print(df.columns.tolist())
+
+print("\nFirst rows:")
+print(df.head())
+
+
+# ============================================================
+# Read data
+# ============================================================
+
+epoch = df["epoch"]
+
+total_loss = df["total_loss"]
+eps_eurosat = df["eps_eurosat"]
+eps_deepglobe = df["eps_deepglobe"]
+
+
+# ============================================================
+# Optional smoothing
+# ============================================================
+# 你的 CSV 是 epoch-average loss，
+# 所以不需要很重的 smoothing。
+# 這裡使用 3-epoch moving average。
+
+SMOOTH = True
+WINDOW = 3
+
+if SMOOTH:
+    total_plot = total_loss.rolling(
+        window=WINDOW,
+        min_periods=1,
+        center=True
+    ).mean()
+
+    eurosat_plot = eps_eurosat.rolling(
+        window=WINDOW,
+        min_periods=1,
+        center=True
+    ).mean()
+
+    deepglobe_plot = eps_deepglobe.rolling(
+        window=WINDOW,
+        min_periods=1,
+        center=True
+    ).mean()
+
+else:
+    total_plot = total_loss
+    eurosat_plot = eps_eurosat
+    deepglobe_plot = eps_deepglobe
+
+
+# ============================================================
+# Colors
+# ============================================================
+
+COLOR_TOTAL     = "#4C72B0"   # 深藍
+COLOR_EUROSAT   = "#C44E52"   # 磚紅
+COLOR_DEEPGLOBE = "#55A868"
+
+
+# ============================================================
+# Plot
+# ============================================================
+
+fig, ax = plt.subplots(
+    figsize=(8.0, 5.4)
+)
+
+
+# ------------------------------------------------------------
+# Total loss
+# ------------------------------------------------------------
+
+ax.plot(
+    epoch,
+    total_plot,
+    color=COLOR_TOTAL,
+    linewidth=2.3,
+    linestyle="-",
+    label="Total Loss"
+)
+
+
+# ------------------------------------------------------------
+# EuroSAT epsilon loss
+# ------------------------------------------------------------
+
+ax.plot(
+    epoch,
+    eurosat_plot,
+    color=COLOR_EUROSAT,
+    linewidth=2.0,
+    linestyle="--",
+    label=r"EuroSAT $\epsilon$-Loss"
+)
+
+
+# ------------------------------------------------------------
+# DeepGlobe epsilon loss
+# ------------------------------------------------------------
+
+ax.plot(
+    epoch,
+    deepglobe_plot,
+    color=COLOR_DEEPGLOBE,
+    linewidth=2.0,
+    linestyle="-.",
+    label=r"DeepGlobe $\epsilon$-Loss"
+)
+
+
+# ============================================================
+# Axis labels
+# ============================================================
+
+ax.set_xlabel(
+    "Epoch",
+    fontsize=18
+)
+
+ax.set_ylabel(
+    "Training Loss",
+    fontsize=18
+)
+
+
+# ============================================================
+# Tick settings
+# ============================================================
+
+ax.tick_params(
+    axis="both",
+    which="major",
+    labelsize=16
+)
+
+
+# ============================================================
+# Grid
+# ============================================================
+
+ax.grid(
+    True,
+    linestyle="-",
+    linewidth=0.7,
+    alpha=0.22
+)
+
+
+# ============================================================
+# Border
+# ============================================================
+
+for spine in ax.spines.values():
+    spine.set_linewidth(1.0)
+
+
+# ============================================================
+# Legend
+# ============================================================
+
+ax.legend(
+    loc="upper right",
+    fontsize=16,
+    frameon=True,
+    fancybox=False,
+    edgecolor="0.8"
+)
+
+
+# ============================================================
+# IMPORTANT:
+# 不加 plt.title()
+#
+# 論文 Figure title 交給 LaTeX caption
+# ============================================================
+
+
+# ============================================================
+# Layout
+# ============================================================
 
 plt.tight_layout()
 
-plt.savefig("Comparison.png", dpi=300)
+
+# ============================================================
+# Save
+# ============================================================
+
+plt.savefig(
+    PNG_PATH,
+    dpi=300,
+    bbox_inches="tight"
+)
+
+plt.savefig(
+    PDF_PATH,
+    bbox_inches="tight"
+)
+
+
+# ============================================================
+# Show
+# ============================================================
+
+plt.show()
+
+
+print("\nSaved:")
+print(PNG_PATH)
+print(PDF_PATH)
+
+# ============================================================
+# x0 Reconstruction Loss
+# ============================================================
+
+x0_eurosat = df["x0_eurosat"]
+x0_deepglobe = df["x0_deepglobe"]
+
+x0_eurosat_plot = x0_eurosat.rolling(
+    window=3,
+    min_periods=1,
+    center=True
+).mean()
+
+x0_deepglobe_plot = x0_deepglobe.rolling(
+    window=3,
+    min_periods=1,
+    center=True
+).mean()
+
+
+fig, ax = plt.subplots(
+    figsize=(8.0, 5.4)
+)
+
+ax.plot(
+    epoch,
+    x0_eurosat_plot,
+    color="#DD8452",
+    linewidth=2.2,
+    linestyle="--",
+    label=r"EuroSAT $x_0$-Loss"
+)
+
+ax.plot(
+    epoch,
+    x0_deepglobe_plot,
+    color="#6666BB",
+    linewidth=2.2,
+    linestyle="-",
+    label=r"DeepGlobe $x_0$-Loss"
+)
+
+ax.set_xlabel(
+    "Epoch",
+    fontsize=18
+)
+
+ax.set_ylabel(
+    r"$x_0$ Reconstruction Loss",
+    fontsize=18
+)
+
+ax.tick_params(
+    axis="both",
+    labelsize=16
+)
+
+ax.grid(
+    True,
+    linewidth=0.7,
+    alpha=0.22
+)
+
+ax.legend(
+    fontsize=16,
+    frameon=True,
+    fancybox=False,
+    edgecolor="0.8"
+)
+
+for spine in ax.spines.values():
+    spine.set_linewidth(1.0)
+
+plt.tight_layout()
+
+plt.savefig(
+    os.path.join(
+        SAVE_DIR,
+        "DDPM_x0_Loss.pdf"
+    ),
+    bbox_inches="tight"
+)
+
+plt.savefig(
+    os.path.join(
+        SAVE_DIR,
+        "DDPM_x0_Loss.png"
+    ),
+    dpi=300,
+    bbox_inches="tight"
+)
 
 plt.show()
